@@ -1,0 +1,138 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@theme {
+  --color-bg: #09090b;
+  --color-surface: #131316;
+  --color-surface-2: #1b1b1f;
+  --color-fg: #f4f4f0;
+  --color-muted: #8a8882;
+  --color-subtle: #5c5b57;
+  --color-accent: #c8c4bc;
+  --color-accent-fg: #121214;
+  --color-border: color-mix(in oklab, var(--color-fg) 12%, transparent);
+  --color-border-strong: color-mix(in oklab, var(--color-fg) 22%, transparent);
+  --color-overlay: color-mix(in oklab, var(--color-bg) 72%, transparent);
+  --color-ring: #c8c4bc;
+  --color-warn: #b08968;
+
+  --font-display: "Fraunces", "Songti SC", "Noto Serif SC", serif;
+  --font-sans: "Figtree", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+
+  --shadow-border: 0 0 0 1px color-mix(in oklab, var(--color-fg) 10%, transparent);
+  --shadow-border-hover: 0 0 0 1px color-mix(in oklab, var(--color-fg) 16%, transparent);
+
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --motion-stagger: 40ms;
+  --motion-micro: 80ms;
+  --motion-quick: 150ms;
+  --motion-fast: 250ms;
+  --motion-medium: 350ms;
+  --motion-slow: 400ms;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--color-bg);
+    color: var(--color-fg);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  h1,
+  h2,
+  h3 {
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: var(--font-display);
+  }
+}
+
+.view-enter {
+  animation: view-enter var(--motion-slow) var(--ease-smooth-out) both;
+}
+
+.view-enter-delay {
+  animation: view-enter var(--motion-slow) var(--ease-smooth-out) both;
+  animation-delay: var(--motion-fast);
+}
+
+.stagger-1 {
+  animation-delay: calc(var(--motion-stagger) * 1);
+}
+.stagger-2 {
+  animation-delay: calc(var(--motion-stagger) * 3);
+}
+.stagger-3 {
+  animation-delay: calc(var(--motion-stagger) * 5);
+}
+.stagger-4 {
+  animation-delay: calc(var(--motion-stagger) * 7);
+}
+
+@keyframes view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(var(--space-y, 8px));
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+.shackle {
+  transform-origin: 100px 92px;
+  transition:
+    transform var(--motion-medium) var(--ease-smooth-out),
+    opacity var(--motion-fast) var(--ease-out);
+}
+
+.shackle-open {
+  transform: translateY(-11px) rotate(-14deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .view-enter,
+  .view-enter-delay,
+  .stagger-1,
+  .stagger-2,
+  .stagger-3,
+  .stagger-4 {
+    animation: none;
+  }
+
+  .shackle {
+    transition: none;
+  }
+}
