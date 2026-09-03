@@ -11,6 +11,7 @@ export type LockEventKind =
   | "emergency_penalty"
   | "ended"
   | "keyholder_unlock"
+  | "keyholder_claim"
   | "keyholder_add_time"
   | "keyholder_sub_time"
   | "freeze"

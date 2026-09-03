@@ -10,6 +10,7 @@ const KIND_LABEL: Record<string, string> = {
   emergency_penalty: "紧急永久惩罚",
   ended: "到期结束",
   keyholder_unlock: "钥匙开锁",
+  keyholder_claim: "钥匙账号绑定",
   keyholder_add_time: "钥匙加时",
   keyholder_sub_time: "钥匙减时",
   freeze: "冻结",

@@ -1,0 +1,52 @@
+# Self-host Yue Lock (Node server + Postgres)
+#
+# Usage:
+#   1. Copy this folder's compose to your server (or run from repo root)
+#   2. Set env vars below (especially BETTER_AUTH_SECRET and BETTER_AUTH_URL)
+#   3. docker compose -f deploy/docker-compose.yml up -d --build
+#
+# Public URL example: https://lock.example.com
+# Point DNS + reverse proxy (Caddy/Nginx) to host port 8080.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: yuelock
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-now}
+      POSTGRES_DB: yuelock
+    volumes:
+      - yuelock_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yuelock -d yuelock"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        NITRO_PRESET: node-server
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      NODE_ENV: production
+      PORT: "8080"
+      HOST: "0.0.0.0"
+      DATABASE_URL: postgres://yuelock:${POSTGRES_PASSWORD:-change-me-now}@db:5432/yuelock
+      # Required: long random string for session signing
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:-replace-with-long-random-secret}
+      # Required: your public origin (no trailing slash)
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:8080}
+      # Auth on for self-host (email/password enabled in app code)
+      VITE_AUTH_ENABLED: "true"
+
+volumes:
+  yuelock_pg:

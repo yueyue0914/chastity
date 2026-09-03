@@ -1,7 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Link } from "@tanstack/react-router";
 import { ActiveLock } from "@/components/lock/active-lock";
 import { CreateLock } from "@/components/lock/create-lock";
 import { ObedienceModal } from "@/components/lock/obedience-modal";
+import {
+  RedirectToSignIn,
+  SignedIn,
+  SignedOut,
+  UserButton,
+} from "@/lib/auth/gates";
 import {
   canWearerEnd,
   CLOCK_GUARD_KEY,
@@ -22,6 +29,19 @@ import {
 const OBEDIENCE_TS_KEY = "yue-lock:obedience-ts:";
 
 export function LockApp() {
+  return (
+    <>
+      <SignedOut>
+        <RedirectToSignIn />
+      </SignedOut>
+      <SignedIn>
+        <LockAppInner />
+      </SignedIn>
+    </>
+  );
+}
+
+function LockAppInner() {
   const lock = useLockStore((s) => s.lock);
   const hydrate = useLockStore((s) => s.hydrate);
   const startLock = useLockStore((s) => s.startLock);
@@ -168,14 +188,28 @@ export function LockApp() {
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden">
-      <header className="flex shrink-0 items-end justify-between px-6 pt-8 pb-4">
+      <header className="flex shrink-0 items-end justify-between gap-3 px-6 pt-8 pb-4">
         <div>
           <p className="text-xs tracking-widest text-muted">Yue Lock</p>
           <h1 className="font-display mt-1 text-4xl tracking-tight text-fg">月锁</h1>
         </div>
-        <span className="rounded-full px-3 py-1 text-xs tracking-wide text-muted shadow-[var(--shadow-border)]">
-          {status}
-        </span>
+        <div className="flex flex-col items-end gap-2">
+          <span className="rounded-full px-3 py-1 text-xs tracking-wide text-muted shadow-[var(--shadow-border)]">
+            {status}
+          </span>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/profile"
+              className="text-xs text-muted hover:text-fg"
+            >
+              资料
+            </Link>
+            <Link to="/keys" className="text-xs text-muted hover:text-fg">
+              钥匙
+            </Link>
+            <UserButton />
+          </div>
+        </div>
       </header>
 
       {syncError ? (

@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import {
   Camera,
@@ -8,6 +8,9 @@ import {
   Unlock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { SignedIn, SignedOut, UserButton } from "@/lib/auth/gates";
+import { useCurrentUserState } from "@/lib/auth/use-current-user";
+import { claimKeyholderLock } from "@/lib/lock-account-server";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,6 +73,8 @@ const MIN_LOCK_PRESETS = [
 ] as const;
 
 export function KeyholderPanel({ code }: { code: string }) {
+  const { user, isPending } = useCurrentUserState();
+  const claimedRef = useRef<string | null>(null);
   const [lock, setLock] = useState<LockRecord | null>(null);
   const [tasks, setTasks] = useState<LockTask[]>([]);
   const [loading, setLoading] = useState(true);
@@ -105,6 +110,22 @@ export function KeyholderPanel({ code }: { code: string }) {
     return () => window.clearInterval(id);
   }, [code]);
 
+  // Signed-in keyholder: bind this lock to the account (once per token).
+  useEffect(() => {
+    if (isPending || !user) return;
+    if (claimedRef.current === code) return;
+    claimedRef.current = code;
+    void claimKeyholderLock({ data: { token: code } })
+      .then((next) => {
+        setLock(next);
+        setMessage("已绑定到当前账号，可在「钥匙工作台」查看");
+      })
+      .catch((err) => {
+        const msg = err instanceof Error ? err.message : "认领失败";
+        if (!msg.includes("已被其他")) return;
+        setError(msg);
+      });
+  }, [code, user, isPending]);
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(id);
@@ -589,6 +610,24 @@ export function KeyholderPanel({ code }: { code: string }) {
 function Shell({ children }: { children: ReactNode }) {
   return (
     <main className="mx-auto flex h-dvh w-full max-w-md flex-col overflow-y-auto bg-bg px-6 pt-8 text-fg">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-xs tracking-widest text-muted">
+          <KeyRound className="size-3.5" /> 钥匙端
+        </p>
+        <div className="flex items-center gap-2">
+          <SignedIn>
+            <Link to="/keys" className="text-xs text-muted hover:text-fg">
+              工作台
+            </Link>
+            <UserButton />
+          </SignedIn>
+          <SignedOut>
+            <Link to="/login" className="text-xs text-muted hover:text-fg">
+              登录认领
+            </Link>
+          </SignedOut>
+        </div>
+      </div>
       {children}
     </main>
   );

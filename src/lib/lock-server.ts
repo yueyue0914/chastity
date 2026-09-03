@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
+import { authMiddleware } from "@/lib/auth/middleware";
 import {
   appendEvent,
   fetchByKeyholder,
@@ -47,6 +48,7 @@ export {
 } from "@/lib/lock-keyholder-server";
 
 export const createLockSession = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator(
     (input: {
       durationMs: number;
@@ -66,7 +68,7 @@ export const createLockSession = createServerFn({ method: "POST" })
       obediencePhrase: string;
     }) => input,
   )
-  .handler(async ({ data }): Promise<LockRecord> => {
+  .handler(async ({ context, data }): Promise<LockRecord> => {
     const sql = await getSql();
     const now = Date.now();
     const durationMs = clampDurationMs(data.durationMs);
@@ -124,7 +126,8 @@ export const createLockSession = createServerFn({ method: "POST" })
         end_phrase, notify_expiry, hygiene_started_at,
         frozen_at, min_lock_ms, photo_request_active,
         obedience_enabled, obedience_interval_ms, obedience_phrase,
-        last_client_now, integrity_penalty_count, session_nonce, status
+        last_client_now, integrity_penalty_count, session_nonce,
+        wearer_user_id, keyholder_user_id, status
       ) values (
         ${id}, ${wearerToken}, ${keyholderToken},
         ${startedAt}, ${durationMs}, ${endsAt},
@@ -135,7 +138,8 @@ export const createLockSession = createServerFn({ method: "POST" })
         ${endPhrase}, ${data.notifyExpiry}, null,
         null, ${minLockMs}, false,
         ${data.obedienceEnabled !== false}, ${obedienceIntervalMs}, ${obediencePhrase},
-        ${now}, 0, ${sessionNonce}, 'active'
+        ${now}, 0, ${sessionNonce},
+        ${context.userId}, null, 'active'
       )
     `;
 
