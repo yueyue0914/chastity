@@ -18,10 +18,13 @@ import {
   formatDurationZh,
 } from "@/lib/format-time";
 import {
+  DEFAULT_EMERGENCY_PENALTY_MS,
+  DEFAULT_END_PHRASE,
   DEFAULT_HYGIENE_MAX_MS,
   DEFAULT_HYGIENE_PENALTY_FIXED_MS,
   DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
   type CreateLockInput,
+  type EmergencyLimitMode,
   type HygienePenaltyMode,
 } from "@/lib/lock-types";
 import { cn } from "@/lib/utils";
@@ -45,17 +48,24 @@ const HYGIENE_PRESETS = [
 ] as const;
 
 const FIXED_PENALTY_PRESETS = [
-  { label: "罚 15 分", ms: 15 * 60_000 },
-  { label: "罚 30 分", ms: 30 * 60_000 },
   { label: "罚 1 时", ms: 60 * 60_000 },
   { label: "罚 6 时", ms: 6 * 60 * 60_000 },
+  { label: "罚 1 天", ms: 24 * 60 * 60_000 },
+  { label: "罚 3 天", ms: 3 * 24 * 60 * 60_000 },
 ] as const;
 
 const MULTIPLIER_PRESETS = [
-  { label: "1×", value: 1 },
-  { label: "1.5×", value: 1.5 },
   { label: "2×", value: 2 },
   { label: "3×", value: 3 },
+  { label: "5×", value: 5 },
+  { label: "10×", value: 10 },
+] as const;
+
+const EMERGENCY_PENALTY_PRESETS = [
+  { label: "记 1 天", ms: 24 * 60 * 60_000 },
+  { label: "记 3 天", ms: 3 * 24 * 60 * 60_000 },
+  { label: "记 7 天", ms: 7 * 24 * 60 * 60_000 },
+  { label: "记 30 天", ms: 30 * 24 * 60 * 60_000 },
 ] as const;
 
 type CreateLockProps = {
@@ -69,6 +79,11 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
   const [hours, setHours] = useState(1);
   const [minutes, setMinutes] = useState(0);
   const [allowEmergency, setAllowEmergency] = useState(true);
+  const [emergencyLimitMode, setEmergencyLimitMode] =
+    useState<EmergencyLimitMode>("cooldown_24h");
+  const [emergencyPenaltyMs, setEmergencyPenaltyMs] = useState(
+    DEFAULT_EMERGENCY_PENALTY_MS,
+  );
   const [allowHygiene, setAllowHygiene] = useState(false);
   const [hygieneMaxMs, setHygieneMaxMs] = useState(DEFAULT_HYGIENE_MAX_MS);
   const [hygienePenaltyMode, setHygienePenaltyMode] =
@@ -79,6 +94,7 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
   const [hygienePenaltyMultiplier, setHygienePenaltyMultiplier] = useState(
     DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
   );
+  const [endPhrase, setEndPhrase] = useState(DEFAULT_END_PHRASE);
   const [notifyExpiry, setNotifyExpiry] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -89,7 +105,8 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
   }, []);
 
   const durationMs = durationFromParts(days, hours, minutes);
-  const valid = durationMs >= 60_000;
+  const phraseOk = endPhrase.trim().length >= 4;
+  const valid = durationMs >= 60_000 && phraseOk;
   const unlockAt = useMemo(() => now + durationMs, [now, durationMs]);
 
   function applyPreset(preset: (typeof PRESETS)[number]) {
@@ -104,6 +121,8 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
     await onStart({
       durationMs,
       allowEmergency,
+      emergencyLimitMode,
+      emergencyPenaltyMs,
       allowHygiene,
       hygieneMaxMs: allowHygiene ? hygieneMaxMs : DEFAULT_HYGIENE_MAX_MS,
       hygienePenaltyMode,
@@ -113,6 +132,7 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
       hygienePenaltyMultiplier: allowHygiene
         ? hygienePenaltyMultiplier
         : DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
+      endPhrase,
       notifyExpiry,
     });
     setConfirmOpen(false);
@@ -172,7 +192,7 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
           <div className="space-y-2">
             <ToggleRow
               label="紧急解锁"
-              description="佩戴者可提前结束（仍会记录）"
+              description="佩戴者可提前结束（受冷却/次数限制）"
               checked={allowEmergency}
               onChange={setAllowEmergency}
             />
@@ -188,6 +208,90 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
               checked={notifyExpiry}
               onChange={setNotifyExpiry}
             />
+          </div>
+
+          {allowEmergency ? (
+            <div className="space-y-3 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
+              <p className="text-xs tracking-wide text-muted">紧急解锁限制</p>
+              <div className="grid grid-cols-1 gap-2">
+                {(
+                  [
+                    {
+                      mode: "cooldown_24h" as const,
+                      label: "24 小时冷却",
+                      desc: "用过后需等满 24 小时才能再用",
+                    },
+                    {
+                      mode: "once_penalty" as const,
+                      label: "仅一次 + 永久惩罚记录",
+                      desc: "整段锁定只能用一次，并写入不可清除历史",
+                    },
+                    {
+                      mode: "unlimited" as const,
+                      label: "不限制次数",
+                      desc: "仍会记入事件历史",
+                    },
+                  ] as const
+                ).map((opt) => (
+                  <Button
+                    key={opt.mode}
+                    type="button"
+                    size="chip"
+                    variant={
+                      emergencyLimitMode === opt.mode ? "default" : "secondary"
+                    }
+                    className="h-auto flex-col items-start gap-0.5 px-3 py-2 text-left whitespace-normal"
+                    aria-pressed={emergencyLimitMode === opt.mode}
+                    onClick={() => setEmergencyLimitMode(opt.mode)}
+                  >
+                    <span className="text-xs font-medium">{opt.label}</span>
+                    <span className="text-[11px] opacity-70">{opt.desc}</span>
+                  </Button>
+                ))}
+              </div>
+              {emergencyLimitMode === "once_penalty" ? (
+                <div className="space-y-2">
+                  <p className="text-xs tracking-wide text-muted">
+                    永久惩罚记录时长
+                  </p>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {EMERGENCY_PENALTY_PRESETS.map((p) => (
+                      <Button
+                        key={p.label}
+                        type="button"
+                        size="chip"
+                        variant={
+                          emergencyPenaltyMs === p.ms ? "default" : "secondary"
+                        }
+                        className="px-1 text-xs"
+                        aria-pressed={emergencyPenaltyMs === p.ms}
+                        onClick={() => setEmergencyPenaltyMs(p.ms)}
+                      >
+                        {p.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="space-y-2 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
+            <p className="text-xs tracking-wide text-muted">结束宣言</p>
+            <p className="text-xs text-subtle">
+              到期结束或紧急解锁时，必须完整输入此句才能确认
+            </p>
+            <textarea
+              value={endPhrase}
+              onChange={(e) => setEndPhrase(e.target.value)}
+              rows={3}
+              spellCheck={false}
+              className="w-full resize-none rounded-lg bg-bg px-3 py-2 text-sm text-fg outline-none shadow-[var(--shadow-border)] focus-visible:ring-2 focus-visible:ring-ring"
+              placeholder={DEFAULT_END_PHRASE}
+            />
+            {!phraseOk ? (
+              <p className="text-xs text-warn">宣言至少 4 个字</p>
+            ) : null}
           </div>
 
           {allowHygiene ? (
@@ -347,9 +451,19 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
                     hygienePenaltyMode === "fixed"
                       ? `固定加回 ${formatDurationZh(hygienePenaltyFixedMs)}`
                       : `超时 × ${hygienePenaltyMultiplier}`
-                  }。`
+                  }（写入永久历史）。`
                 : " 不允许卫生清洁。"}
-              {allowEmergency ? " 已开启紧急解锁。" : " 未开启紧急解锁。"}            </AlertDialogDescription>
+              {allowEmergency
+                ? ` 紧急解锁：${
+                    emergencyLimitMode === "cooldown_24h"
+                      ? "24 小时冷却"
+                      : emergencyLimitMode === "once_penalty"
+                        ? `仅一次并永久记录 ${formatDurationZh(emergencyPenaltyMs)}`
+                        : "不限次数"
+                  }。`
+                : " 未开启紧急解锁。"}
+              结束须完整输入宣言。
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={busy}>返回</AlertDialogCancel>

@@ -106,9 +106,11 @@ export function LockApp() {
           now={now}
           busy={busy}
           lastPenaltyMs={lastPenaltyMs}
-          onEnd={() => void endByExpiry()}
-          onEmergency={async () => {
-            await emergencyUnlock();
+          onEnd={async (phrase) => {
+            await endByExpiry(phrase);
+          }}
+          onEmergency={async (phrase) => {
+            await emergencyUnlock(phrase);
           }}
           onStartHygiene={async () => {
             setLastPenaltyMs(null);

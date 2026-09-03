@@ -13,6 +13,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Countdown } from "@/components/lock/countdown";
+import { PenaltyHistory } from "@/components/lock/penalty-history";
 import { VaultDial } from "@/components/lock/vault-dial";
 import { formatDateTimeZh, formatDurationZh } from "@/lib/format-time";
 import {
@@ -182,7 +183,14 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
           />
         ) : null}
       </dl>
-      {error ? (
+
+      <div className="mt-6">
+        <PenaltyHistory
+          token={code}
+          role="keyholder"
+          refreshKey={`${lock.endsAt}-${lock.durationMs}`}
+        />
+      </div>      {error ? (
         <p className="mt-3 text-center text-sm text-warn" role="alert">
           {error}
         </p>

@@ -7,6 +7,7 @@ import {
   unlockLock,
 } from "@/lib/lock-server";
 import {
+  HISTORY_TOKEN_KEY,
   isLockRecord,
   LOCK_STORAGE_KEY,
   type CreateLockInput,
@@ -21,8 +22,8 @@ type LockState = {
   hydrate: () => void;
   startLock: (input: CreateLockInput) => Promise<void>;
   refresh: () => Promise<void>;
-  endByExpiry: () => Promise<boolean>;
-  emergencyUnlock: () => Promise<boolean>;
+  endByExpiry: (phrase: string) => Promise<boolean>;
+  emergencyUnlock: (phrase: string) => Promise<boolean>;
   beginHygiene: () => Promise<void>;
   finishHygiene: () => Promise<{ penaltyMs: number }>;
   clearLocal: () => void;
@@ -43,11 +44,28 @@ function writeLock(lock: LockRecord | null) {
   try {
     if (lock && lock.status === "active") {
       window.localStorage.setItem(LOCK_STORAGE_KEY, JSON.stringify(lock));
+      rememberHistoryToken(lock.wearerToken);
     } else {
       window.localStorage.removeItem(LOCK_STORAGE_KEY);
     }
   } catch {
     // Ignore quota / private-mode failures.
+  }
+}
+
+function rememberHistoryToken(token: string) {
+  try {
+    const raw = window.localStorage.getItem(HISTORY_TOKEN_KEY);
+    const list: string[] = raw ? (JSON.parse(raw) as string[]) : [];
+    if (!list.includes(token)) {
+      list.unshift(token);
+      window.localStorage.setItem(
+        HISTORY_TOKEN_KEY,
+        JSON.stringify(list.slice(0, 20)),
+      );
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -90,36 +108,38 @@ export const useLockStore = create<LockState>((set, get) => ({
       set({ syncError: message });
     }
   },
-  endByExpiry: async () => {
+  endByExpiry: async (phrase) => {
     const { lock } = get();
     if (!lock) return false;
     if (Date.now() < lock.endsAt) return false;
-    set({ busy: true });
+    set({ busy: true, syncError: null });
     try {
       await unlockLock({
-        data: { token: lock.wearerToken, mode: "expiry" },
+        data: { token: lock.wearerToken, mode: "expiry", phrase },
       });
       writeLock(null);
       set({ lock: null, busy: false });
       return true;
-    } catch {
-      set({ busy: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "无法结束";
+      set({ busy: false, syncError: message });
       return false;
     }
   },
-  emergencyUnlock: async () => {
+  emergencyUnlock: async (phrase) => {
     const { lock } = get();
     if (!lock?.allowEmergency) return false;
-    set({ busy: true });
+    set({ busy: true, syncError: null });
     try {
       await unlockLock({
-        data: { token: lock.wearerToken, mode: "emergency" },
+        data: { token: lock.wearerToken, mode: "emergency", phrase },
       });
       writeLock(null);
       set({ lock: null, busy: false });
       return true;
-    } catch {
-      set({ busy: false });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "紧急解锁失败";
+      set({ busy: false, syncError: message });
       return false;
     }
   },

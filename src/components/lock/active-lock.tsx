@@ -1,20 +1,13 @@
 import { useMemo, useState } from "react";
 import { Check, Copy, KeyRound, ShieldAlert, ShowerHead } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Countdown } from "@/components/lock/countdown";
+import { PenaltyHistory } from "@/components/lock/penalty-history";
+import { PhraseConfirmDialog } from "@/components/lock/phrase-confirm-dialog";
 import { VaultDial } from "@/components/lock/vault-dial";
 import { formatDateTimeZh, formatDurationZh } from "@/lib/format-time";
 import {
+  canUseEmergency,
   computeHygienePenaltyMs,
   hygieneOvertimeMs,
   hygieneRemainingMs,
@@ -22,13 +15,15 @@ import {
   isLockReady,
   remainingMs,
   type LockRecord,
-} from "@/lib/lock-types";type ActiveLockProps = {
+} from "@/lib/lock-types";
+
+type ActiveLockProps = {
   lock: LockRecord;
   now: number;
   busy?: boolean;
   lastPenaltyMs?: number | null;
-  onEnd: () => void;
-  onEmergency: () => Promise<void>;
+  onEnd: (phrase: string) => Promise<void> | void;
+  onEmergency: (phrase: string) => Promise<void>;
   onStartHygiene: () => Promise<void>;
   onEndHygiene: () => Promise<void>;
 };
@@ -50,8 +45,11 @@ export function ActiveLock({
   const overtime = hygieneOvertimeMs(lock, now);
   const pendingPenalty = computeHygienePenaltyMs(lock, overtime);
   const progress = lock.durationMs > 0 ? remaining / lock.durationMs : 0;
+  const emergencyGate = canUseEmergency(lock, now);
+  const [endOpen, setEndOpen] = useState(false);
   const [emergencyOpen, setEmergencyOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  const historyKey = `${lock.endsAt}-${lock.durationMs}-${lastPenaltyMs ?? 0}-${lock.emergencyUseCount}`;
 
   const keyUrl = useMemo(() => {
     if (typeof window === "undefined") return "";
@@ -67,6 +65,13 @@ export function ActiveLock({
       // ignore
     }
   }
+
+  const emergencyLimitLabel =
+    lock.emergencyLimitMode === "cooldown_24h"
+      ? "24 小时冷却"
+      : lock.emergencyLimitMode === "once_penalty"
+        ? `仅一次 · 永久记 ${formatDurationZh(lock.emergencyPenaltyMs)}`
+        : "不限次数";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -90,18 +95,19 @@ export function ActiveLock({
                 {lock.hygienePenaltyMode === "fixed"
                   ? "固定加时"
                   : `${lock.hygienePenaltyMultiplier}×`}
-                ）
+                ）并写入永久历史
               </p>
             ) : (
               <p className="text-sm text-muted">
                 剩余清洁时间 {formatDurationZh(hygieneLeft)}
               </p>
-            )}            <Countdown remainingMs={overtime > 0 ? overtime : hygieneLeft} />
+            )}
+            <Countdown remainingMs={overtime > 0 ? overtime : hygieneLeft} />
           </div>
         ) : ready ? (
           <div className="view-enter stagger-2 space-y-2 text-center">
             <p className="font-display text-3xl tracking-tight text-fg">已到期</p>
-            <p className="text-sm text-muted">可以结束这次锁定</p>
+            <p className="text-sm text-muted">须完整输入宣言才能结束</p>
           </div>
         ) : (
           <div className="view-enter stagger-2 space-y-3">
@@ -112,7 +118,7 @@ export function ActiveLock({
 
         {lastPenaltyMs && lastPenaltyMs > 0 ? (
           <p className="text-center text-sm text-warn" role="status">
-            清洁超时，已加罚 {formatDurationZh(lastPenaltyMs)}
+            清洁超时，已加罚 {formatDurationZh(lastPenaltyMs)}（已记入历史）
           </p>
         ) : null}
 
@@ -122,7 +128,7 @@ export function ActiveLock({
           <Row label="开始于" value={formatDateTimeZh(lock.startedAt)} />
           <Row
             label="紧急解锁"
-            value={lock.allowEmergency ? "已开启" : "未开启"}
+            value={lock.allowEmergency ? emergencyLimitLabel : "未开启"}
           />
           <Row
             label="卫生清洁"
@@ -141,7 +147,8 @@ export function ActiveLock({
                   : `${lock.hygienePenaltyMultiplier}× 超时`
               }
             />
-          ) : null}        </dl>
+          ) : null}
+        </dl>
 
         <div className="view-enter stagger-4 space-y-3 rounded-xl bg-surface px-4 py-4 shadow-[var(--shadow-border)]">
           <div className="flex items-center gap-2 text-sm text-fg">
@@ -165,10 +172,13 @@ export function ActiveLock({
               </>
             )}
           </Button>
-          <p className="text-xs text-subtle">
-            持有人可远程加时、开锁，或协助结束清洁
-          </p>
         </div>
+
+        <PenaltyHistory
+          token={lock.wearerToken}
+          role="wearer"
+          refreshKey={historyKey}
+        />
       </div>
 
       <div className="shrink-0 space-y-2 border-t border-border bg-bg px-6 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
@@ -190,9 +200,9 @@ export function ActiveLock({
               size="lg"
               className="w-full"
               disabled={!ready || busy}
-              onClick={onEnd}
+              onClick={() => setEndOpen(true)}
             >
-              {ready ? "结束锁定" : "到期后可结束"}
+              {ready ? "输入宣言结束" : "到期后可结束"}
             </Button>
             {lock.allowHygiene && !ready ? (
               <Button
@@ -211,38 +221,52 @@ export function ActiveLock({
                 type="button"
                 variant="outline"
                 className="w-full text-warn"
-                disabled={busy}
+                disabled={busy || !emergencyGate.ok}
                 onClick={() => setEmergencyOpen(true)}
               >
                 <ShieldAlert className="size-4" />
-                紧急解锁
+                {emergencyGate.ok
+                  ? "紧急解锁"
+                  : emergencyGate.reason || "紧急解锁不可用"}
               </Button>
             ) : null}
           </>
         )}
       </div>
 
-      <AlertDialog open={emergencyOpen} onOpenChange={setEmergencyOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认紧急解锁？</AlertDialogTitle>
-            <AlertDialogDescription>
-              将立即结束本次锁定。仅在真正需要时使用。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => {
-                setEmergencyOpen(false);
-                void onEmergency();
-              }}
-            >
-              确认紧急解锁
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <PhraseConfirmDialog
+        open={endOpen}
+        onOpenChange={setEndOpen}
+        title="确认结束锁定"
+        description="请完整输入创建时设定的宣言，一字不差后才能结束。"
+        phrase={lock.endPhrase}
+        confirmLabel="确认结束"
+        busy={busy}
+        onConfirm={async (phrase) => {
+          await onEnd(phrase);
+          setEndOpen(false);
+        }}
+      />
+
+      <PhraseConfirmDialog
+        open={emergencyOpen}
+        onOpenChange={setEmergencyOpen}
+        title="确认紧急解锁"
+        description={
+          lock.emergencyLimitMode === "once_penalty"
+            ? `将立即结束锁定，并永久记录惩罚 ${formatDurationZh(lock.emergencyPenaltyMs)}（不可清除）。须完整输入宣言。`
+            : lock.emergencyLimitMode === "cooldown_24h"
+              ? "将立即结束锁定，之后 24 小时内不可再次紧急解锁。须完整输入宣言。"
+              : "将立即结束锁定。须完整输入宣言。"
+        }
+        phrase={lock.endPhrase}
+        confirmLabel="确认紧急解锁"
+        busy={busy}
+        onConfirm={async (phrase) => {
+          await onEmergency(phrase);
+          setEmergencyOpen(false);
+        }}
+      />
     </div>
   );
 }
