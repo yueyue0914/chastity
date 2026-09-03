@@ -1,18 +1,25 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActiveLock } from "@/components/lock/active-lock";
 import { CreateLock } from "@/components/lock/create-lock";
+import { ObedienceModal } from "@/components/lock/obedience-modal";
 import {
+  canWearerEnd,
+  CLOCK_GUARD_KEY,
   hygieneOvertimeMs,
   hygieneRemainingMs,
+  isFrozen,
   isHygieneActive,
-  isLockReady,
+  isTimerExpired,
 } from "@/lib/lock-types";
 import { useLockStore } from "@/lib/lock-store";
+import { wearerSubmitPhoto, syncLockIntegrity } from "@/lib/lock-server";
 import {
   clearHygieneNotifyFlag,
   notifyHygieneWarning,
   notifyLockReady,
 } from "@/lib/notify";
+
+const OBEDIENCE_TS_KEY = "yue-lock:obedience-ts:";
 
 export function LockApp() {
   const lock = useLockStore((s) => s.lock);
@@ -23,10 +30,12 @@ export function LockApp() {
   const beginHygiene = useLockStore((s) => s.beginHygiene);
   const finishHygiene = useLockStore((s) => s.finishHygiene);
   const refresh = useLockStore((s) => s.refresh);
+  const setLock = useLockStore((s) => s.setLock);
   const busy = useLockStore((s) => s.busy);
   const syncError = useLockStore((s) => s.syncError);
   const [now, setNow] = useState(() => Date.now());
   const [lastPenaltyMs, setLastPenaltyMs] = useState<number | null>(null);
+  const [obedienceOpen, setObedienceOpen] = useState(false);
   const notifiedReady = useRef<string | null>(null);
 
   useLayoutEffect(() => {
@@ -36,7 +45,21 @@ export function LockApp() {
   useEffect(() => {
     if (!lock) return;
     setNow(Date.now());
-    const id = window.setInterval(() => setNow(Date.now()), 250);
+    const id = window.setInterval(() => {
+      const t = Date.now();
+      // Local clock rollback guard (also reported to server on sync)
+      try {
+        const raw = localStorage.getItem(CLOCK_GUARD_KEY);
+        const prev = raw ? Number(raw) : t;
+        if (Number.isFinite(prev) && t < prev - 30_000) {
+          // mark for next integrity sync via last known
+        }
+        localStorage.setItem(CLOCK_GUARD_KEY, String(Math.max(prev, t)));
+      } catch {
+        // ignore
+      }
+      setNow(t);
+    }, 250);
     return () => window.clearInterval(id);
   }, [lock]);
 
@@ -47,12 +70,40 @@ export function LockApp() {
     return () => window.clearInterval(id);
   }, [lock?.id, lock?.status, refresh]);
 
+  // Integrity sync: localStorage + server
+  useEffect(() => {
+    if (!lock?.id || lock.status !== "active") return;
+    const tick = async () => {
+      const current = useLockStore.getState().lock;
+      if (!current || current.status !== "active") return;
+      try {
+        const res = await syncLockIntegrity({
+          data: {
+            token: current.wearerToken,
+            clientNow: Date.now(),
+            localEndsAt: current.endsAt,
+            sessionNonce: current.sessionNonce,
+          },
+        });
+        useLockStore.getState().setLock(res.lock);
+        if (res.penalties.length > 0) {
+          setLastPenaltyMs(60 * 60_000);
+        }
+      } catch {
+        // keep local; next refresh may recover
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 20_000);
+    return () => window.clearInterval(id);
+  }, [lock?.id, lock?.status]);
+
   useEffect(() => {
     if (!lock || !lock.notifyExpiry) return;
-    if (!isLockReady(lock, now)) return;
+    if (!canWearerEnd(lock, now)) return;
     if (notifiedReady.current === lock.id) return;
     notifiedReady.current = lock.id;
-    notifyLockReady(lock.id, "月锁 · 已到期", "锁定时间已到，可以结束了。");
+    notifyLockReady(lock.id, "月锁 · 可结束", "已满足结束条件，请输入宣言结束。");
   }, [lock, now]);
 
   useEffect(() => {
@@ -64,22 +115,56 @@ export function LockApp() {
     if (left > 0 && left <= 60_000) {
       notifyHygieneWarning(
         lock.id,
-        `清洁将在约 ${Math.ceil(left / 1000)} 秒后超时，超时将按创建时设定规则加罚时。`,
+        `清洁将在约 ${Math.ceil(left / 1000)} 秒后超时。`,
       );
     }
   }, [lock, now]);
 
-  const ready = lock ? isLockReady(lock, now) : false;
+  // Obedience prompts
+  useEffect(() => {
+    if (!lock || !lock.obedienceEnabled || lock.status !== "active") return;
+    const key = OBEDIENCE_TS_KEY + lock.id;
+    const check = () => {
+      try {
+        const last = Number(localStorage.getItem(key) || "0");
+        if (Date.now() - last >= lock.obedienceIntervalMs) {
+          setObedienceOpen(true);
+          try {
+            if (Notification.permission === "granted") {
+              new Notification("月锁 · 服从确认", {
+                body: "请回到页面输入短句确认。",
+                tag: `obedience-${lock.id}`,
+              });
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } catch {
+        setObedienceOpen(true);
+      }
+    };
+    check();
+    const id = window.setInterval(check, 15_000);
+    return () => window.clearInterval(id);
+  }, [lock?.id, lock?.obedienceEnabled, lock?.obedienceIntervalMs, lock?.status]);
+
+  const ready = lock ? canWearerEnd(lock, now) : false;
   const hygiene = lock ? isHygieneActive(lock) : false;
+  const frozen = lock ? isFrozen(lock) : false;
   const status = !lock
     ? "未锁定"
-    : hygiene
-      ? hygieneOvertimeMs(lock, now) > 0
-        ? "清洁超时"
-        : "清洁中"
-      : ready
-        ? "已到期"
-        : "锁定中";
+    : frozen
+      ? "已冻结"
+      : hygiene
+        ? hygieneOvertimeMs(lock, now) > 0
+          ? "清洁超时"
+          : "清洁中"
+        : ready
+          ? "可结束"
+          : isTimerExpired(lock, now)
+            ? "待最低时长"
+            : "锁定中";
 
   return (
     <div className="mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden">
@@ -120,6 +205,13 @@ export function LockApp() {
             const { penaltyMs } = await finishHygiene();
             setLastPenaltyMs(penaltyMs > 0 ? penaltyMs : null);
           }}
+          onPhotoSubmit={async (dataUrl) => {
+            const next = await wearerSubmitPhoto({
+              data: { token: lock.wearerToken, thumbDataUrl: dataUrl },
+            });
+            setLock(next);
+          }}
+          onLockUpdate={(next) => setLock(next)}
         />
       ) : (
         <CreateLock
@@ -132,6 +224,21 @@ export function LockApp() {
           }}
         />
       )}
+
+      <ObedienceModal
+        open={obedienceOpen && !!lock}
+        phrase={lock?.obediencePhrase || "服从主人"}
+        onDismiss={() => {
+          if (lock) {
+            try {
+              localStorage.setItem(OBEDIENCE_TS_KEY + lock.id, String(Date.now()));
+            } catch {
+              // ignore
+            }
+          }
+          setObedienceOpen(false);
+        }}
+      />
     </div>
   );
 }

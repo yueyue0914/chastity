@@ -1,6 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import { KeyRound, ShowerHead, Unlock } from "lucide-react";
+import {
+  Camera,
+  KeyRound,
+  Snowflake,
+  ShowerHead,
+  Unlock,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -17,9 +23,16 @@ import { PenaltyHistory } from "@/components/lock/penalty-history";
 import { VaultDial } from "@/components/lock/vault-dial";
 import { formatDateTimeZh, formatDurationZh } from "@/lib/format-time";
 import {
+  completeLockTask,
   endHygiene,
   getLockByKeyholder,
   keyholderAddTime,
+  keyholderCreateTask,
+  keyholderRequestPhoto,
+  keyholderSetFreeze,
+  keyholderSetMinLock,
+  keyholderSubTime,
+  listLockTasks,
   startHygiene,
   unlockLock,
 } from "@/lib/lock-server";
@@ -27,11 +40,15 @@ import {
   computeHygienePenaltyMs,
   hygieneOvertimeMs,
   hygieneRemainingMs,
+  isFrozen,
   isHygieneActive,
-  isLockReady,
+  isTimerExpired,
+  minLockEndsAt,
   remainingMs,
   type LockRecord,
+  type LockTask,
 } from "@/lib/lock-types";
+
 const ADD_PRESETS = [
   { label: "+15 分", ms: 15 * 60_000 },
   { label: "+1 时", ms: 60 * 60_000 },
@@ -39,23 +56,41 @@ const ADD_PRESETS = [
   { label: "+1 天", ms: 24 * 60 * 60_000 },
 ] as const;
 
-type KeyholderPanelProps = {
-  code: string;
-};
+const SUB_PRESETS = [
+  { label: "-15 分", ms: 15 * 60_000 },
+  { label: "-1 时", ms: 60 * 60_000 },
+  { label: "-6 时", ms: 6 * 60 * 60_000 },
+] as const;
 
-export function KeyholderPanel({ code }: KeyholderPanelProps) {
+const MIN_LOCK_PRESETS = [
+  { label: "最低=时长", ms: -1 },
+  { label: "最低 1 时", ms: 60 * 60_000 },
+  { label: "最低 6 时", ms: 6 * 60 * 60_000 },
+  { label: "最低 1 天", ms: 24 * 60 * 60_000 },
+] as const;
+
+export function KeyholderPanel({ code }: { code: string }) {
   const [lock, setLock] = useState<LockRecord | null>(null);
+  const [tasks, setTasks] = useState<LockTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskRewardMs, setTaskRewardMs] = useState(30 * 60_000);
 
   async function load() {
     try {
       const remote = await getLockByKeyholder({ data: { token: code } });
       setLock(remote);
+      if (remote) {
+        const t = await listLockTasks({
+          data: { token: code, role: "keyholder" },
+        });
+        setTasks(t);
+      }
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载失败");
@@ -83,6 +118,7 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
       setLock(next.status === "active" ? next : null);
       if (okMsg) setMessage(okMsg);
       setError(null);
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "操作失败");
     } finally {
@@ -105,9 +141,6 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
           <VaultDial progress={0} open />
         </div>
         <p className="mt-6 text-center font-display text-2xl text-fg">无进行中锁定</p>
-        <p className="mt-2 text-center text-sm text-muted">
-          链接无效，或锁定已结束
-        </p>
         <div className="mt-8">
           <Button asChild variant="secondary" className="w-full">
             <Link to="/">返回月锁</Link>
@@ -117,7 +150,8 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
     );
   }
 
-  const ready = isLockReady(lock, now);
+  const frozen = isFrozen(lock);
+  const expired = isTimerExpired(lock, now);
   const hygiene = isHygieneActive(lock);
   const remaining = remainingMs(lock, now);
   const overtime = hygieneOvertimeMs(lock, now);
@@ -135,12 +169,23 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
           <h1 className="font-display mt-1 text-3xl tracking-tight text-fg">远程管锁</h1>
         </div>
         <span className="rounded-full px-3 py-1 text-xs text-muted shadow-[var(--shadow-border)]">
-          {hygiene ? (overtime > 0 ? "清洁超时" : "清洁中") : ready ? "已到期" : "锁定中"}
+          {frozen
+            ? "已冻结"
+            : hygiene
+              ? overtime > 0
+                ? "清洁超时"
+                : "清洁中"
+              : expired
+                ? "计时到期"
+                : "锁定中"}
         </span>
       </header>
 
       <div className="mx-auto size-44">
-        <VaultDial progress={ready || hygiene ? 0 : progress} open={ready || hygiene} />
+        <VaultDial
+          progress={expired || hygiene || frozen ? 0 : progress}
+          open={expired || hygiene}
+        />
       </div>
 
       <div className="mt-6 space-y-3">
@@ -148,14 +193,16 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
           <>
             <p className="text-center text-sm text-muted">
               {overtime > 0
-                ? `已超时 ${formatDurationZh(overtime)} · 将加罚 ${formatDurationZh(pendingPenalty)}`
+                ? `已超时 · 将加罚 ${formatDurationZh(pendingPenalty)}`
                 : `清洁剩余 ${formatDurationZh(hygieneLeft)}`}
             </p>
             <Countdown remainingMs={overtime > 0 ? overtime : hygieneLeft} />
           </>
         ) : (
           <>
-            <p className="text-center text-sm text-muted">剩余时间</p>
+            <p className="text-center text-sm text-muted">
+              {frozen ? "冻结中剩余" : "剩余时间"}
+            </p>
             <Countdown remainingMs={remaining} />
           </>
         )}
@@ -163,34 +210,28 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
 
       <dl className="mt-6 space-y-3 rounded-xl bg-surface px-4 py-4 shadow-[var(--shadow-border)]">
         <Row label="解锁时间" value={formatDateTimeZh(lock.endsAt)} />
-        <Row label="锁定时长" value={formatDurationZh(lock.durationMs)} />
         <Row
-          label="卫生清洁"
+          label="最低锁定至"
           value={
-            lock.allowHygiene
-              ? `最长 ${formatDurationZh(lock.hygieneMaxMs)}`
-              : "未允许"
+            lock.minLockMs > 0
+              ? formatDateTimeZh(minLockEndsAt(lock))
+              : "未设置"
           }
         />
-        {lock.allowHygiene ? (
-          <Row
-            label="超时惩罚"
-            value={
-              lock.hygienePenaltyMode === "fixed"
-                ? `固定 ${formatDurationZh(lock.hygienePenaltyFixedMs)}`
-                : `${lock.hygienePenaltyMultiplier}× 超时`
-            }
-          />
+        <Row label="锁定时长" value={formatDurationZh(lock.durationMs)} />
+        {lock.photoThumb ? (
+          <div className="pt-1">
+            <p className="mb-2 text-sm text-muted">最近拍照验证</p>
+            <img
+              src={lock.photoThumb}
+              alt="验证照片"
+              className="w-full rounded-lg"
+            />
+          </div>
         ) : null}
       </dl>
 
-      <div className="mt-6">
-        <PenaltyHistory
-          token={code}
-          role="keyholder"
-          refreshKey={`${lock.endsAt}-${lock.durationMs}`}
-        />
-      </div>      {error ? (
+      {error ? (
         <p className="mt-3 text-center text-sm text-warn" role="alert">
           {error}
         </p>
@@ -201,68 +242,300 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
         </p>
       ) : null}
 
-      <div className="mt-6 space-y-3 pb-[max(1rem,env(safe-area-inset-bottom))]">
-        <p className="text-xs tracking-wide text-muted">增加时间</p>
-        <div className="grid grid-cols-4 gap-2">
-          {ADD_PRESETS.map((p) => (
+      <div className="mt-6 space-y-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+        <section className="space-y-2">
+          <p className="text-xs tracking-wide text-muted">加时</p>
+          <div className="grid grid-cols-4 gap-2">
+            {ADD_PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                type="button"
+                size="chip"
+                variant="secondary"
+                className="px-1 text-xs"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () =>
+                      keyholderAddTime({
+                        data: { token: code, addMs: p.ms },
+                      }),
+                    `已加时 ${p.label}`,
+                  )
+                }
+              >
+                {p.label}
+              </Button>
+            ))}
+          </div>
+        </section>
+
+        <section className="space-y-2">
+          <p className="text-xs tracking-wide text-muted">减时</p>
+          <div className="grid grid-cols-3 gap-2">
+            {SUB_PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                type="button"
+                size="chip"
+                variant="secondary"
+                className="px-1 text-xs"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () =>
+                      keyholderSubTime({
+                        data: { token: code, subMs: p.ms },
+                      }),
+                    `已减时 ${p.label}`,
+                  )
+                }
+              >
+                {p.label}
+              </Button>
+            ))}
+          </div>
+        </section>
+
+        <section className="space-y-2">
+          <p className="text-xs tracking-wide text-muted">最低锁定时长</p>
+          <div className="grid grid-cols-2 gap-2">
+            {MIN_LOCK_PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                type="button"
+                size="chip"
+                variant="secondary"
+                className="px-1 text-xs"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () =>
+                      keyholderSetMinLock({
+                        data: {
+                          token: code,
+                          minLockMs: p.ms < 0 ? lock.durationMs : p.ms,
+                        },
+                      }),
+                    "已更新最低锁定时长",
+                  )
+                }
+              >
+                {p.label}
+              </Button>
+            ))}
+          </div>
+        </section>
+
+        <div className="grid grid-cols-2 gap-2">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy}
+            onClick={() =>
+              void run(
+                () =>
+                  keyholderSetFreeze({
+                    data: { token: code, frozen: !frozen },
+                  }),
+                frozen ? "已解冻" : "已冻结",
+              )
+            }
+          >
+            <Snowflake className="size-4" />
+            {frozen ? "解冻" : "冻结"}
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={busy || hygiene}
+            onClick={() =>
+              void run(
+                () => startHygiene({ data: { token: code, role: "keyholder" } }),
+                "已强制开始清洁",
+              )
+            }
+          >
+            <ShowerHead className="size-4" />
+            强制清洁
+          </Button>
+        </div>
+
+        {hygiene ? (
+          <Button
+            type="button"
+            variant="secondary"
+            className="w-full"
+            disabled={busy}
+            onClick={() =>
+              void run(
+                () => endHygiene({ data: { token: code, role: "keyholder" } }),
+                "已结束清洁",
+              )
+            }
+          >
+            结束清洁
+          </Button>
+        ) : null}
+
+        <Button
+          type="button"
+          variant="secondary"
+          className="w-full"
+          disabled={busy || lock.photoRequestActive}
+          onClick={() =>
+            void run(
+              () => keyholderRequestPhoto({ data: { token: code } }),
+              "已要求拍照验证",
+            )
+          }
+        >
+          <Camera className="size-4" />
+          {lock.photoRequestActive ? "等待拍照中…" : "要求拍照验证"}
+        </Button>
+
+        <section className="space-y-2 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
+          <p className="text-xs tracking-wide text-muted">发布任务</p>
+          <input
+            value={taskTitle}
+            onChange={(e) => setTaskTitle(e.target.value)}
+            placeholder="任务内容，例如：跪姿报数"
+            className="w-full rounded-lg bg-bg px-3 py-2 text-sm outline-none shadow-[var(--shadow-border)]"
+          />
+          <div className="grid grid-cols-2 gap-2">
             <Button
-              key={p.label}
               type="button"
               size="chip"
               variant="secondary"
-              className="px-1 text-xs"
-              disabled={busy}
+              disabled={busy || taskTitle.trim().length < 2}
               onClick={() =>
-                void run(
-                  () =>
-                    keyholderAddTime({
-                      data: { token: code, addMs: p.ms },
-                    }),
-                  `已增加 ${p.label.replace("+", "")}`,
-                )
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    await keyholderCreateTask({
+                      data: {
+                        token: code,
+                        title: taskTitle,
+                        rewardType: "reduce",
+                        rewardMs: taskRewardMs,
+                      },
+                    });
+                    setTaskTitle("");
+                    setMessage(`已发布减时任务（${formatDurationZh(taskRewardMs)}）`);
+                    await load();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "发布失败");
+                  } finally {
+                    setBusy(false);
+                  }
+                })()
               }
             >
-              {p.label}
+              减时任务
             </Button>
-          ))}
-        </div>
-
-        {lock.allowHygiene ? (
-          hygiene ? (
             <Button
               type="button"
+              size="chip"
               variant="secondary"
-              className="w-full"
-              disabled={busy}
+              disabled={busy || taskTitle.trim().length < 2}
               onClick={() =>
-                void run(
-                  () => endHygiene({ data: { token: code, role: "keyholder" } }),
-                  overtime > 0 ? "已结束清洁并结算罚时" : "已结束清洁",
-                )
+                void (async () => {
+                  setBusy(true);
+                  try {
+                    await keyholderCreateTask({
+                      data: {
+                        token: code,
+                        title: taskTitle,
+                        rewardType: "unlock",
+                        rewardMs: 0,
+                      },
+                    });
+                    setTaskTitle("");
+                    setMessage("已发布解锁任务");
+                    await load();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "发布失败");
+                  } finally {
+                    setBusy(false);
+                  }
+                })()
               }
             >
-              <ShowerHead className="size-4" />
-              结束清洁
+              解锁任务
             </Button>
-          ) : !ready ? (
-            <Button
-              type="button"
-              variant="secondary"
-              className="w-full"
-              disabled={busy}
-              onClick={() =>
-                void run(
-                  () =>
-                    startHygiene({ data: { token: code, role: "keyholder" } }),
-                  "已批准卫生清洁",
-                )
-              }
-            >
-              <ShowerHead className="size-4" />
-              批准卫生清洁
-            </Button>
-          ) : null
-        ) : null}
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {[15, 30, 60].map((m) => (
+              <Button
+                key={m}
+                type="button"
+                size="chip"
+                variant={taskRewardMs === m * 60_000 ? "default" : "secondary"}
+                className="text-xs"
+                onClick={() => setTaskRewardMs(m * 60_000)}
+              >
+                奖 {m} 分
+              </Button>
+            ))}
+          </div>
+          {tasks.length > 0 ? (
+            <ul className="space-y-2 pt-2">
+              {tasks.map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-center justify-between gap-2 text-sm"
+                >
+                  <span className="text-fg">
+                    {t.title}
+                    <span className="ml-2 text-xs text-muted">
+                      {t.status === "done"
+                        ? "已完成"
+                        : t.rewardType === "unlock"
+                          ? "解锁"
+                          : `-${formatDurationZh(t.rewardMs)}`}
+                    </span>
+                  </span>
+                  {t.status === "open" ? (
+                    <Button
+                      type="button"
+                      size="chip"
+                      variant="secondary"
+                      className="text-xs"
+                      disabled={busy}
+                      onClick={() =>
+                        void (async () => {
+                          setBusy(true);
+                          try {
+                            const res = await completeLockTask({
+                              data: {
+                                token: code,
+                                role: "keyholder",
+                                taskId: t.id,
+                              },
+                            });
+                            setLock(
+                              res.lock.status === "active" ? res.lock : null,
+                            );
+                            setMessage("已确认任务完成");
+                            await load();
+                          } catch (err) {
+                            setError(
+                              err instanceof Error ? err.message : "失败",
+                            );
+                          } finally {
+                            setBusy(false);
+                          }
+                        })()
+                      }
+                    >
+                      确认完成
+                    </Button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
 
         <Button
           type="button"
@@ -274,6 +547,12 @@ export function KeyholderPanel({ code }: KeyholderPanelProps) {
           <Unlock className="size-4" />
           开锁结束
         </Button>
+
+        <PenaltyHistory
+          token={code}
+          role="keyholder"
+          refreshKey={`${lock.endsAt}-${lock.durationMs}-${tasks.length}`}
+        />
       </div>
 
       <AlertDialog open={unlockOpen} onOpenChange={setUnlockOpen}>

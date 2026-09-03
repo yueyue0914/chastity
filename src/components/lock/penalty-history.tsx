@@ -11,6 +11,16 @@ const KIND_LABEL: Record<string, string> = {
   ended: "到期结束",
   keyholder_unlock: "钥匙开锁",
   keyholder_add_time: "钥匙加时",
+  keyholder_sub_time: "钥匙减时",
+  freeze: "冻结",
+  unfreeze: "解冻",
+  force_hygiene: "强制清洁",
+  photo_request: "要求拍照",
+  photo_submit: "提交拍照",
+  task_created: "发布任务",
+  task_done: "完成任务",
+  integrity_penalty: "完整性惩罚",
+  min_lock_set: "最低锁定",
 };
 
 type PenaltyHistoryProps = {

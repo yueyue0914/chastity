@@ -23,6 +23,8 @@ import {
   DEFAULT_HYGIENE_MAX_MS,
   DEFAULT_HYGIENE_PENALTY_FIXED_MS,
   DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
+  DEFAULT_OBEDIENCE_INTERVAL_MS,
+  DEFAULT_OBEDIENCE_PHRASE,
   type CreateLockInput,
   type EmergencyLimitMode,
   type HygienePenaltyMode,
@@ -95,6 +97,14 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
     DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
   );
   const [endPhrase, setEndPhrase] = useState(DEFAULT_END_PHRASE);
+  const [minLockMs, setMinLockMs] = useState(0);
+  const [obedienceEnabled, setObedienceEnabled] = useState(true);
+  const [obedienceIntervalMs, setObedienceIntervalMs] = useState(
+    DEFAULT_OBEDIENCE_INTERVAL_MS,
+  );
+  const [obediencePhrase, setObediencePhrase] = useState(
+    DEFAULT_OBEDIENCE_PHRASE,
+  );
   const [notifyExpiry, setNotifyExpiry] = useState(true);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -133,6 +143,10 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
         ? hygienePenaltyMultiplier
         : DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
       endPhrase,
+      minLockMs: minLockMs > 0 ? minLockMs : durationMs,
+      obedienceEnabled,
+      obedienceIntervalMs,
+      obediencePhrase,
       notifyExpiry,
     });
     setConfirmOpen(false);
@@ -208,7 +222,72 @@ export function CreateLock({ onStart, busy, error }: CreateLockProps) {
               checked={notifyExpiry}
               onChange={setNotifyExpiry}
             />
+            <ToggleRow
+              label="服从强化"
+              description="锁定期间定时全屏提示，须输入短句确认"
+              checked={obedienceEnabled}
+              onChange={setObedienceEnabled}
+            />
           </div>
+
+          <div className="space-y-2 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
+            <p className="text-xs tracking-wide text-muted">最低锁定时长</p>
+            <p className="text-xs text-subtle">
+              未到此时刻，即使计时归零也不能自行结束（钥匙仍可开锁）
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { label: "等于本次时长", ms: 0 },
+                { label: "1 小时", ms: 60 * 60_000 },
+                { label: "6 小时", ms: 6 * 60 * 60_000 },
+                { label: "1 天", ms: 24 * 60 * 60_000 },
+              ].map((p) => (
+                <Button
+                  key={p.label}
+                  type="button"
+                  size="chip"
+                  variant={minLockMs === p.ms ? "default" : "secondary"}
+                  className="text-xs"
+                  aria-pressed={minLockMs === p.ms}
+                  onClick={() => setMinLockMs(p.ms)}
+                >
+                  {p.label}
+                </Button>
+              ))}
+            </div>
+          </div>
+
+          {obedienceEnabled ? (
+            <div className="space-y-2 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">
+              <p className="text-xs tracking-wide text-muted">服从提示间隔</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "15 分", ms: 15 * 60_000 },
+                  { label: "30 分", ms: 30 * 60_000 },
+                  { label: "1 时", ms: 60 * 60_000 },
+                ].map((p) => (
+                  <Button
+                    key={p.label}
+                    type="button"
+                    size="chip"
+                    variant={
+                      obedienceIntervalMs === p.ms ? "default" : "secondary"
+                    }
+                    className="text-xs"
+                    onClick={() => setObedienceIntervalMs(p.ms)}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+              <input
+                value={obediencePhrase}
+                onChange={(e) => setObediencePhrase(e.target.value)}
+                className="w-full rounded-lg bg-bg px-3 py-2 text-sm outline-none shadow-[var(--shadow-border)]"
+                placeholder={DEFAULT_OBEDIENCE_PHRASE}
+              />
+            </div>
+          ) : null}
 
           {allowEmergency ? (
             <div className="space-y-3 rounded-xl bg-surface p-3 shadow-[var(--shadow-border)]">

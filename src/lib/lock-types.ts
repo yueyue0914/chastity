@@ -1,9 +1,8 @@
 export type LockStatus = "active" | "ended" | "emergency_ended";
-
 export type HygienePenaltyMode = "fixed" | "multiplier";
-
-/** How wearer emergency unlock is limited for this session. */
 export type EmergencyLimitMode = "unlimited" | "cooldown_24h" | "once_penalty";
+export type TaskRewardType = "reduce" | "unlock";
+export type TaskStatus = "open" | "done";
 
 export type LockEventKind =
   | "started"
@@ -12,7 +11,17 @@ export type LockEventKind =
   | "emergency_penalty"
   | "ended"
   | "keyholder_unlock"
-  | "keyholder_add_time";
+  | "keyholder_add_time"
+  | "keyholder_sub_time"
+  | "freeze"
+  | "unfreeze"
+  | "force_hygiene"
+  | "photo_request"
+  | "photo_submit"
+  | "task_created"
+  | "task_done"
+  | "integrity_penalty"
+  | "min_lock_set";
 
 export type LockEvent = {
   id: string;
@@ -23,19 +32,32 @@ export type LockEvent = {
   createdAt: number;
 };
 
+export type LockTask = {
+  id: string;
+  lockId: string;
+  title: string;
+  rewardType: TaskRewardType;
+  rewardMs: number;
+  status: TaskStatus;
+  createdAt: number;
+  completedAt: number | null;
+};
+
 export type LockOptions = {
   allowEmergency: boolean;
   emergencyLimitMode: EmergencyLimitMode;
-  /** Permanent penalty recorded when using once_penalty emergency. */
   emergencyPenaltyMs: number;
   allowHygiene: boolean;
   hygieneMaxMs: number;
   hygienePenaltyMode: HygienePenaltyMode;
   hygienePenaltyFixedMs: number;
   hygienePenaltyMultiplier: number;
-  /** Exact phrase required to confirm ending (empty = no phrase gate). */
   endPhrase: string;
   notifyExpiry: boolean;
+  minLockMs: number;
+  obedienceEnabled: boolean;
+  obedienceIntervalMs: number;
+  obediencePhrase: string;
 };
 
 export type LockRecord = {
@@ -58,6 +80,17 @@ export type LockRecord = {
   endPhrase: string;
   notifyExpiry: boolean;
   hygieneStartedAt: number | null;
+  frozenAt: number | null;
+  minLockMs: number;
+  photoRequestActive: boolean;
+  photoSubmittedAt: number | null;
+  photoThumb: string | null;
+  obedienceEnabled: boolean;
+  obedienceIntervalMs: number;
+  obediencePhrase: string;
+  lastClientNow: number | null;
+  integrityPenaltyCount: number;
+  sessionNonce: string;
   status: LockStatus;
 };
 
@@ -70,10 +103,14 @@ export const DEFAULT_HYGIENE_PENALTY_FIXED_MS = 60 * 60_000;
 export const DEFAULT_HYGIENE_PENALTY_MULTIPLIER = 2;
 export const DEFAULT_EMERGENCY_PENALTY_MS = 24 * 60 * 60_000;
 export const DEFAULT_END_PHRASE = "我是主人的无面锁屌latex性偶";
+export const DEFAULT_OBEDIENCE_PHRASE = "服从主人";
+export const DEFAULT_OBEDIENCE_INTERVAL_MS = 30 * 60_000;
+export const INTEGRITY_CLOCK_PENALTY_MS = 60 * 60_000;
 export const MIN_DURATION_MS = 60_000;
 export const MAX_DURATION_MS = 365 * 24 * 60 * 60 * 1000;
-export const LOCK_STORAGE_KEY = "yue-lock:v4";
+export const LOCK_STORAGE_KEY = "yue-lock:v5";
 export const HISTORY_TOKEN_KEY = "yue-lock:history-tokens:v1";
+export const CLOCK_GUARD_KEY = "yue-lock:clock-guard:v1";
 
 function isPenaltyMode(value: unknown): value is HygienePenaltyMode {
   return value === "fixed" || value === "multiplier";
@@ -110,19 +147,62 @@ export function isLockRecord(value: unknown): value is LockRecord {
     typeof r.endPhrase === "string" &&
     typeof r.notifyExpiry === "boolean" &&
     (r.hygieneStartedAt === null || typeof r.hygieneStartedAt === "number") &&
+    (r.frozenAt === null || typeof r.frozenAt === "number") &&
+    typeof r.minLockMs === "number" &&
+    typeof r.photoRequestActive === "boolean" &&
+    (r.photoSubmittedAt === null || typeof r.photoSubmittedAt === "number") &&
+    (r.photoThumb === null || typeof r.photoThumb === "string") &&
+    typeof r.obedienceEnabled === "boolean" &&
+    typeof r.obedienceIntervalMs === "number" &&
+    typeof r.obediencePhrase === "string" &&
+    (r.lastClientNow === null || typeof r.lastClientNow === "number") &&
+    typeof r.integrityPenaltyCount === "number" &&
+    typeof r.sessionNonce === "string" &&
     (r.status === "active" ||
       r.status === "ended" ||
       r.status === "emergency_ended")
   );
 }
 
-export function isLockReady(lock: LockRecord, now: number): boolean {
-  return lock.status === "active" && now >= lock.endsAt;
+/** Wall-clock used for countdown while frozen. */
+export function effectiveNow(lock: LockRecord, now: number): number {
+  if (lock.frozenAt != null) return lock.frozenAt;
+  return now;
+}
+
+export function isFrozen(lock: LockRecord): boolean {
+  return lock.status === "active" && lock.frozenAt != null;
 }
 
 export function remainingMs(lock: LockRecord, now: number): number {
   if (lock.status !== "active") return 0;
-  return Math.max(0, lock.endsAt - now);
+  return Math.max(0, lock.endsAt - effectiveNow(lock, now));
+}
+
+export function isTimerExpired(lock: LockRecord, now: number): boolean {
+  return lock.status === "active" && effectiveNow(lock, now) >= lock.endsAt;
+}
+
+export function minLockEndsAt(lock: LockRecord): number {
+  return lock.startedAt + Math.max(0, lock.minLockMs);
+}
+
+export function isMinLockMet(lock: LockRecord, now: number): boolean {
+  return now >= minLockEndsAt(lock);
+}
+
+/** Wearer may self-end only when timer done, min lock met, and not frozen. */
+export function canWearerEnd(lock: LockRecord, now: number): boolean {
+  return (
+    isTimerExpired(lock, now) &&
+    isMinLockMet(lock, now) &&
+    !isFrozen(lock)
+  );
+}
+
+/** @deprecated use canWearerEnd / isTimerExpired */
+export function isLockReady(lock: LockRecord, now: number): boolean {
+  return canWearerEnd(lock, now);
 }
 
 export function isHygieneActive(lock: LockRecord): boolean {
@@ -215,4 +295,9 @@ export function clampEmergencyPenaltyMs(value: number): number {
 
 export function normalizeEndPhrase(value: string): string {
   return value.replace(/\r\n/g, "\n").trimEnd();
+}
+
+export function clampMinLockMs(value: number, durationMs: number): number {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.min(Math.max(0, value), Math.max(durationMs, MAX_DURATION_MS));
 }

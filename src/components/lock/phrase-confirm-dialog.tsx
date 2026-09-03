@@ -20,6 +20,8 @@ type PhraseConfirmDialogProps = {
   phrase: string;
   confirmLabel: string;
   busy?: boolean;
+  /** If true, only the next correct character can be appended (逐字输入). */
+  charByChar?: boolean;
   onConfirm: (phrase: string) => void | Promise<void>;
 };
 
@@ -31,6 +33,7 @@ export function PhraseConfirmDialog({
   phrase,
   confirmLabel,
   busy,
+  charByChar = true,
   onConfirm,
 }: PhraseConfirmDialogProps) {
   const [typed, setTyped] = useState("");
@@ -39,6 +42,19 @@ export function PhraseConfirmDialog({
   useEffect(() => {
     if (open) setTyped("");
   }, [open]);
+
+  function onType(next: string) {
+    if (!charByChar) {
+      setTyped(next);
+      return;
+    }
+    // Only allow growing as a correct prefix of the target phrase.
+    if (phrase.startsWith(next)) {
+      setTyped(next);
+      return;
+    }
+    // Ignore wrong keystrokes; keep current correct prefix.
+  }
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -52,26 +68,27 @@ export function PhraseConfirmDialog({
           <p className="rounded-lg bg-surface-2 px-3 py-2 text-sm leading-relaxed text-fg shadow-[var(--shadow-border)]">
             {phrase}
           </p>
+          {charByChar ? (
+            <p className="text-xs text-muted">
+              进度 {typed.length}/{phrase.length} · 须逐字输入，错字不会写入
+            </p>
+          ) : null}
           <label className="block space-y-1.5">
             <span className="text-xs tracking-wide text-muted">
-              请完整输入以上宣言（须一字不差）
+              {charByChar ? "请逐字输入以上文字" : "请完整输入以上宣言（须一字不差）"}
             </span>
             <textarea
               value={typed}
-              onChange={(e) => setTyped(e.target.value)}
+              onChange={(e) => onType(e.target.value)}
               rows={3}
               spellCheck={false}
               autoComplete="off"
               className={cn(
                 "w-full resize-none rounded-lg bg-surface px-3 py-2 text-sm text-fg outline-none shadow-[var(--shadow-border)] focus-visible:ring-2 focus-visible:ring-ring",
-                typed.length > 0 && !matched && "ring-1 ring-warn",
               )}
-              placeholder="在此逐字输入…"
+              placeholder="在此输入…"
             />
           </label>
-          {typed.length > 0 && !matched ? (
-            <p className="text-xs text-warn">尚未完全匹配</p>
-          ) : null}
         </div>
 
         <AlertDialogFooter>

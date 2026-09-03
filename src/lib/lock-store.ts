@@ -20,6 +20,7 @@ type LockState = {
   syncError: string | null;
   busy: boolean;
   hydrate: () => void;
+  setLock: (lock: LockRecord | null) => void;
   startLock: (input: CreateLockInput) => Promise<void>;
   refresh: () => Promise<void>;
   endByExpiry: (phrase: string) => Promise<boolean>;
@@ -75,6 +76,10 @@ export const useLockStore = create<LockState>((set, get) => ({
   busy: false,
   hydrate: () => {
     set({ lock: readLock() });
+  },
+  setLock: (lock) => {
+    writeLock(lock);
+    set({ lock });
   },
   startLock: async (input) => {
     set({ busy: true, syncError: null });

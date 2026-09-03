@@ -1,154 +1,50 @@
 import { createServerFn } from "@tanstack/react-start";
 import { getSql } from "@/lib/db";
 import {
+  appendEvent,
+  fetchByKeyholder,
+  fetchByWearer,
+  randomToken,
+  requireToken,
+  rowToEvent,
+} from "@/lib/lock-db";
+import {
   canUseEmergency,
+  canWearerEnd,
   clampDurationMs,
   clampEmergencyPenaltyMs,
   clampHygienePenaltyFixedMs,
   clampHygienePenaltyMultiplier,
+  clampMinLockMs,
   computeHygienePenaltyMs,
   DEFAULT_EMERGENCY_PENALTY_MS,
   DEFAULT_END_PHRASE,
   DEFAULT_HYGIENE_MAX_MS,
   DEFAULT_HYGIENE_PENALTY_FIXED_MS,
   DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
+  DEFAULT_OBEDIENCE_INTERVAL_MS,
+  DEFAULT_OBEDIENCE_PHRASE,
   normalizeEndPhrase,
   phrasesMatch,
   type EmergencyLimitMode,
   type HygienePenaltyMode,
   type LockEvent,
-  type LockEventKind,
   type LockRecord,
   type LockStatus,
 } from "@/lib/lock-types";
 
-type LockRow = {
-  id: string;
-  wearer_token: string;
-  keyholder_token: string;
-  started_at: string | Date;
-  duration_ms: number | string;
-  ends_at: string | Date;
-  allow_emergency: boolean;
-  emergency_limit_mode: string | null;
-  emergency_penalty_ms: number | string | null;
-  emergency_last_used_at: string | Date | null;
-  emergency_use_count: number | string | null;
-  allow_hygiene: boolean;
-  hygiene_max_ms: number | string;
-  hygiene_penalty_mode: string | null;
-  hygiene_penalty_fixed_ms: number | string | null;
-  hygiene_penalty_multiplier: number | string | null;
-  end_phrase: string | null;
-  notify_expiry: boolean;
-  hygiene_started_at: string | Date | null;
-  status: LockStatus;
-};
-
-type EventRow = {
-  id: string;
-  lock_id: string;
-  kind: string;
-  amount_ms: number | string;
-  detail: string;
-  created_at: string | Date;
-};
-
-function toMs(value: string | Date | null | undefined): number | null {
-  if (value == null) return null;
-  const t = value instanceof Date ? value.getTime() : Date.parse(String(value));
-  return Number.isFinite(t) ? t : null;
-}
-
-function toNum(value: number | string | null | undefined, fallback = 0): number {
-  if (value == null) return fallback;
-  const n = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function parsePenaltyMode(value: string | null | undefined): HygienePenaltyMode {
-  return value === "fixed" ? "fixed" : "multiplier";
-}
-
-function parseEmergencyMode(value: string | null | undefined): EmergencyLimitMode {
-  if (value === "unlimited" || value === "once_penalty") return value;
-  return "cooldown_24h";
-}
-
-function rowToLock(row: LockRow): LockRecord {
-  return {
-    id: row.id,
-    wearerToken: row.wearer_token,
-    keyholderToken: row.keyholder_token,
-    startedAt: toMs(row.started_at) ?? Date.now(),
-    durationMs: toNum(row.duration_ms),
-    endsAt: toMs(row.ends_at) ?? Date.now(),
-    allowEmergency: row.allow_emergency,
-    emergencyLimitMode: parseEmergencyMode(row.emergency_limit_mode),
-    emergencyPenaltyMs: toNum(row.emergency_penalty_ms, DEFAULT_EMERGENCY_PENALTY_MS),
-    emergencyLastUsedAt: toMs(row.emergency_last_used_at),
-    emergencyUseCount: toNum(row.emergency_use_count, 0),
-    allowHygiene: row.allow_hygiene,
-    hygieneMaxMs: toNum(row.hygiene_max_ms, DEFAULT_HYGIENE_MAX_MS),
-    hygienePenaltyMode: parsePenaltyMode(row.hygiene_penalty_mode),
-    hygienePenaltyFixedMs: toNum(
-      row.hygiene_penalty_fixed_ms,
-      DEFAULT_HYGIENE_PENALTY_FIXED_MS,
-    ),
-    hygienePenaltyMultiplier: toNum(
-      row.hygiene_penalty_multiplier,
-      DEFAULT_HYGIENE_PENALTY_MULTIPLIER,
-    ),
-    endPhrase: row.end_phrase ?? "",
-    notifyExpiry: row.notify_expiry,
-    hygieneStartedAt: toMs(row.hygiene_started_at),
-    status: row.status,
-  };
-}
-
-function rowToEvent(row: EventRow): LockEvent {
-  return {
-    id: row.id,
-    lockId: row.lock_id,
-    kind: row.kind as LockEventKind,
-    amountMs: toNum(row.amount_ms),
-    detail: row.detail,
-    createdAt: toMs(row.created_at) ?? Date.now(),
-  };
-}
-
-function randomToken(): string {
-  const bytes = new Uint8Array(12);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function requireToken(token: string): string {
-  const t = token.trim();
-  if (t.length < 8 || t.length > 64) throw new Error("无效令牌");
-  return t;
-}
-
-async function appendEvent(
-  lockId: string,
-  wearerToken: string,
-  kind: LockEventKind,
-  amountMs: number,
-  detail: string,
-) {
-  const sql = await getSql();
-  await sql`
-    insert into lock_events (id, lock_id, wearer_token, kind, amount_ms, detail)
-    values (
-      ${crypto.randomUUID()},
-      ${lockId},
-      ${wearerToken},
-      ${kind},
-      ${amountMs},
-      ${detail}
-    )
-  `;
-}
+export {
+  keyholderAddTime,
+  keyholderSubTime,
+  keyholderSetFreeze,
+  keyholderSetMinLock,
+  keyholderRequestPhoto,
+  wearerSubmitPhoto,
+  keyholderCreateTask,
+  listLockTasks,
+  completeLockTask,
+  syncLockIntegrity,
+} from "@/lib/lock-keyholder-server";
 
 export const createLockSession = createServerFn({ method: "POST" })
   .validator(
@@ -164,6 +60,10 @@ export const createLockSession = createServerFn({ method: "POST" })
       hygienePenaltyMultiplier: number;
       endPhrase: string;
       notifyExpiry: boolean;
+      minLockMs: number;
+      obedienceEnabled: boolean;
+      obedienceIntervalMs: number;
+      obediencePhrase: string;
     }) => input,
   )
   .handler(async ({ data }): Promise<LockRecord> => {
@@ -194,10 +94,22 @@ export const createLockSession = createServerFn({ method: "POST" })
     );
     const endPhrase = normalizeEndPhrase(data.endPhrase || DEFAULT_END_PHRASE);
     if (endPhrase.length < 4) throw new Error("结束宣言至少 4 个字");
+    const minLockMs = clampMinLockMs(data.minLockMs || 0, durationMs);
+    const obedienceIntervalMs = Math.max(
+      60_000,
+      Math.min(
+        data.obedienceIntervalMs || DEFAULT_OBEDIENCE_INTERVAL_MS,
+        24 * 60 * 60_000,
+      ),
+    );
+    const obediencePhrase =
+      normalizeEndPhrase(data.obediencePhrase || DEFAULT_OBEDIENCE_PHRASE) ||
+      DEFAULT_OBEDIENCE_PHRASE;
 
     const id = crypto.randomUUID();
     const wearerToken = randomToken();
     const keyholderToken = randomToken();
+    const sessionNonce = randomToken();
     const startedAt = new Date(now).toISOString();
     const endsAt = new Date(now + durationMs).toISOString();
 
@@ -209,7 +121,10 @@ export const createLockSession = createServerFn({ method: "POST" })
         emergency_last_used_at, emergency_use_count,
         allow_hygiene, hygiene_max_ms,
         hygiene_penalty_mode, hygiene_penalty_fixed_ms, hygiene_penalty_multiplier,
-        end_phrase, notify_expiry, hygiene_started_at, status
+        end_phrase, notify_expiry, hygiene_started_at,
+        frozen_at, min_lock_ms, photo_request_active,
+        obedience_enabled, obedience_interval_ms, obedience_phrase,
+        last_client_now, integrity_penalty_count, session_nonce, status
       ) values (
         ${id}, ${wearerToken}, ${keyholderToken},
         ${startedAt}, ${durationMs}, ${endsAt},
@@ -217,7 +132,10 @@ export const createLockSession = createServerFn({ method: "POST" })
         null, 0,
         ${data.allowHygiene}, ${hygieneMaxMs},
         ${hygienePenaltyMode}, ${hygienePenaltyFixedMs}, ${hygienePenaltyMultiplier},
-        ${endPhrase}, ${data.notifyExpiry}, null, 'active'
+        ${endPhrase}, ${data.notifyExpiry}, null,
+        null, ${minLockMs}, false,
+        ${data.obedienceEnabled !== false}, ${obedienceIntervalMs}, ${obediencePhrase},
+        ${now}, 0, ${sessionNonce}, 'active'
       )
     `;
 
@@ -243,25 +161,20 @@ export const createLockSession = createServerFn({ method: "POST" })
       endPhrase,
       notifyExpiry: data.notifyExpiry,
       hygieneStartedAt: null,
+      frozenAt: null,
+      minLockMs,
+      photoRequestActive: false,
+      photoSubmittedAt: null,
+      photoThumb: null,
+      obedienceEnabled: data.obedienceEnabled !== false,
+      obedienceIntervalMs,
+      obediencePhrase,
+      lastClientNow: now,
+      integrityPenaltyCount: 0,
+      sessionNonce,
       status: "active",
     };
   });
-
-async function fetchByWearer(token: string): Promise<LockRecord | null> {
-  const sql = await getSql();
-  const rows = await sql<LockRow>`
-    select * from locks where wearer_token = ${token} limit 1
-  `;
-  return rows[0] ? rowToLock(rows[0]) : null;
-}
-
-async function fetchByKeyholder(token: string): Promise<LockRecord | null> {
-  const sql = await getSql();
-  const rows = await sql<LockRow>`
-    select * from locks where keyholder_token = ${token} limit 1
-  `;
-  return rows[0] ? rowToLock(rows[0]) : null;
-}
 
 export const getLockByWearer = createServerFn({ method: "GET" })
   .validator((input: { token: string }) => ({
@@ -291,47 +204,25 @@ export const listLockEvents = createServerFn({ method: "GET" })
         : await fetchByWearer(data.token);
     if (!lock) return [];
     const sql = await getSql();
-    const rows = await sql<EventRow>`
+    const rows = await sql`
       select id, lock_id, kind, amount_ms, detail, created_at
       from lock_events
       where lock_id = ${lock.id}
       order by created_at desc
       limit 100
     `;
-    return rows.map(rowToEvent);
-  });
-
-export const keyholderAddTime = createServerFn({ method: "POST" })
-  .validator((input: { token: string; addMs: number }) => {
-    const addMs = Number(input.addMs);
-    if (!Number.isFinite(addMs) || addMs <= 0 || addMs > 30 * 24 * 60 * 60_000) {
-      throw new Error("加时无效");
-    }
-    return { token: requireToken(input.token), addMs };
-  })
-  .handler(async ({ data }): Promise<LockRecord> => {
-    const lock = await fetchByKeyholder(data.token);
-    if (!lock || lock.status !== "active") {
-      throw new Error("锁定不存在或已结束");
-    }
-    const sql = await getSql();
-    const nextEnds = lock.endsAt + data.addMs;
-    const nextDuration = lock.durationMs + data.addMs;
-    await sql`
-      update locks
-      set ends_at = ${new Date(nextEnds).toISOString()},
-          duration_ms = ${nextDuration},
-          updated_at = now()
-      where keyholder_token = ${data.token} and status = 'active'
-    `;
-    await appendEvent(
-      lock.id,
-      lock.wearerToken,
-      "keyholder_add_time",
-      data.addMs,
-      "钥匙持有人加时",
+    return rows.map((r) =>
+      rowToEvent(
+        r as {
+          id: string;
+          lock_id: string;
+          kind: string;
+          amount_ms: number | string;
+          detail: string;
+          created_at: string | Date;
+        },
+      ),
     );
-    return { ...lock, endsAt: nextEnds, durationMs: nextDuration };
   });
 
 export const unlockLock = createServerFn({ method: "POST" })
@@ -358,8 +249,12 @@ export const unlockLock = createServerFn({ method: "POST" })
     }
 
     const now = Date.now();
-    if (data.mode === "expiry" && now < lock.endsAt) {
-      throw new Error("尚未到期");
+    if (data.mode === "expiry") {
+      if (!canWearerEnd(lock, now)) {
+        if (lock.frozenAt != null) throw new Error("锁定已冻结，无法自行结束");
+        if (now < lock.endsAt) throw new Error("尚未到期");
+        throw new Error("未达到钥匙设定的最低锁定时长，无法自行结束");
+      }
     }
     if (data.mode === "emergency") {
       const gate = canUseEmergency(lock, now);
@@ -380,6 +275,7 @@ export const unlockLock = createServerFn({ method: "POST" })
         update locks
         set status = ${status},
             hygiene_started_at = null,
+            frozen_at = null,
             emergency_last_used_at = ${new Date(now).toISOString()},
             emergency_use_count = ${lock.emergencyUseCount + 1},
             updated_at = now()
@@ -400,6 +296,7 @@ export const unlockLock = createServerFn({ method: "POST" })
         update locks
         set status = ${status},
             hygiene_started_at = null,
+            frozen_at = null,
             updated_at = now()
         where keyholder_token = ${data.token} and status = 'active'
       `;
@@ -415,6 +312,7 @@ export const unlockLock = createServerFn({ method: "POST" })
         update locks
         set status = ${status},
             hygiene_started_at = null,
+            frozen_at = null,
             updated_at = now()
         where wearer_token = ${data.token} and status = 'active'
       `;
@@ -425,6 +323,7 @@ export const unlockLock = createServerFn({ method: "POST" })
       ...lock,
       status,
       hygieneStartedAt: null,
+      frozenAt: null,
       emergencyLastUsedAt:
         data.mode === "emergency" ? now : lock.emergencyLastUsedAt,
       emergencyUseCount:
@@ -449,22 +348,31 @@ export const startHygiene = createServerFn({ method: "POST" })
     if (!lock || lock.status !== "active") {
       throw new Error("锁定不存在或已结束");
     }
-    if (!lock.allowHygiene) {
+    if (!lock.allowHygiene && data.role === "wearer") {
       throw new Error("本次锁定未允许卫生清洁");
     }
-    if (lock.hygieneStartedAt != null) {
-      return lock;
-    }
+    if (lock.hygieneStartedAt != null) return lock;
+    if (lock.frozenAt != null) throw new Error("冻结中无法开始清洁");
+
     const now = Date.now();
     const sql = await getSql();
     const iso = new Date(now).toISOString();
     if (data.role === "keyholder") {
       await sql`
         update locks
-        set hygiene_started_at = ${iso}, updated_at = now()
+        set hygiene_started_at = ${iso},
+            allow_hygiene = true,
+            updated_at = now()
         where keyholder_token = ${data.token} and status = 'active'
           and hygiene_started_at is null
       `;
+      await appendEvent(
+        lock.id,
+        lock.wearerToken,
+        "force_hygiene",
+        0,
+        "钥匙强制开始清洁",
+      );
     } else {
       await sql`
         update locks
@@ -473,7 +381,7 @@ export const startHygiene = createServerFn({ method: "POST" })
           and hygiene_started_at is null
       `;
     }
-    return { ...lock, hygieneStartedAt: now };
+    return { ...lock, hygieneStartedAt: now, allowHygiene: true };
   });
 
 export const endHygiene = createServerFn({ method: "POST" })
@@ -491,9 +399,7 @@ export const endHygiene = createServerFn({ method: "POST" })
     if (!lock || lock.status !== "active") {
       throw new Error("锁定不存在或已结束");
     }
-    if (lock.hygieneStartedAt == null) {
-      return lock;
-    }
+    if (lock.hygieneStartedAt == null) return lock;
 
     const now = Date.now();
     const overtime = Math.max(
